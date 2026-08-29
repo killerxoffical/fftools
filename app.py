@@ -8,7 +8,6 @@ import hashlib
 import re
 import imaplib
 import email
-from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
@@ -16,21 +15,25 @@ import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Crypto Import
+# Safe Crypto Import
+HAS_CRYPTO = False
 try:
     from Crypto.Cipher import AES
     from Crypto.Util.Padding import pad, unpad
     HAS_CRYPTO = True
-except ImportError:
-    HAS_CRYPTO = False
+    AeSkEy = b'Yg&tc%DEuh6%Zc^8'
+    AeSiV  = b'6oyZDr22E3ychjM%'
+except Exception as e:
+    print(f"Crypto Notice: {e}")
 
-# Protobuf Import
+# Safe Protobuf Import
+HAS_PROTOBUF = False
 try:
     import MajoRLogin_pb2 as mLpB
     import MajorLoginRes_pb2 as mLrPb
     HAS_PROTOBUF = True
-except ImportError:
-    HAS_PROTOBUF = False
+except Exception as e:
+    print(f"Protobuf Notice: {e}")
 
 app = Flask(__name__)
 CORS(app)
@@ -41,9 +44,6 @@ HEADERS = {
     "Accept": "application/json"
 }
 
-AeSkEy = b'Yg&tc%DEuh6%Zc^8'
-AeSiV  = b'6oyZDr22E3ychjM%'
-
 PLATFORM_MAP = {
     1: "Garena", 3: "Facebook", 4: "Guest", 5: "VK", 
     6: "Huawei", 7: "Apple", 8: "Google", 10: "GameCenter / Line", 
@@ -52,17 +52,26 @@ PLATFORM_MAP = {
 
 def enc(d): 
     if not HAS_CRYPTO: return d
-    return AES.new(AeSkEy, AES.MODE_CBC, AeSiV).encrypt(pad(d, 16))
+    try:
+        return AES.new(AeSkEy, AES.MODE_CBC, AeSiV).encrypt(pad(d, 16))
+    except:
+        return d
 
 def dec(d): 
     if not HAS_CRYPTO: return d
-    return unpad(AES.new(AeSkEy, AES.MODE_CBC, AeSiV).decrypt(d), 16)
+    try:
+        return unpad(AES.new(AeSkEy, AES.MODE_CBC, AeSiV).decrypt(d), 16)
+    except:
+        return d
 
 def convert_seconds(s):
-    d, h = divmod(s, 86400)
-    h, m = divmod(h, 3600)
-    m, s = divmod(m, 60)
-    return f"{d} Day {h} Hour {m} Min {s} Sec"
+    try:
+        d, h = divmod(s, 86400)
+        h, m = divmod(h, 3600)
+        m, s = divmod(m, 60)
+        return f"{d} Day {h} Hour {m} Min {s} Sec"
+    except:
+        return ""
 
 def extract_otp_from_mailbox(user_email, app_password, max_wait_sec=30):
     try:
@@ -110,8 +119,8 @@ def home():
     return jsonify({
         "status": "Online",
         "service": "Booyah Day Garena API",
-        "crypto": HAS_CRYPTO,
-        "protobuf": HAS_PROTOBUF
+        "crypto_enabled": HAS_CRYPTO,
+        "protobuf_enabled": HAS_PROTOBUF
     })
 
 
