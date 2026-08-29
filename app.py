@@ -39,9 +39,9 @@ app = Flask(__name__)
 CORS(app)
 
 HEADERS = {
-    "User-Agent": "GarenaMSDK/4.0.30 (Android; Motorola Moto G; Android 10)",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Content-Type": "application/x-www-form-urlencoded",
-    "Accept": "application/json"
+    "Accept": "application/json, text/plain, */*"
 }
 
 PLATFORM_MAP = {
@@ -49,20 +49,6 @@ PLATFORM_MAP = {
     6: "Huawei", 7: "Apple", 8: "Google", 10: "GameCenter / Line", 
     11: "X (Twitter)", 13: "Apple ID", 28: "Line", 35: "TikTok"
 }
-
-def enc(d): 
-    if not HAS_CRYPTO: return d
-    try:
-        return AES.new(AeSkEy, AES.MODE_CBC, AeSiV).encrypt(pad(d, 16))
-    except:
-        return d
-
-def dec(d): 
-    if not HAS_CRYPTO: return d
-    try:
-        return unpad(AES.new(AeSkEy, AES.MODE_CBC, AeSiV).decrypt(d), 16)
-    except:
-        return d
 
 def convert_seconds(s):
     try:
@@ -72,6 +58,72 @@ def convert_seconds(s):
         return f"{d} Day {h} Hour {m} Min {s} Sec"
     except:
         return ""
+
+def extract_token_from_string(text):
+    """Deep extracts any 32-character hex token from any text or URL"""
+    if not text:
+        return None
+    
+    # 1. Unquote URL multiple times to handle double encoding
+    unquoted = urllib.parse.unquote(urllib.parse.unquote(text))
+    
+    # 2. Check for access_token= parameter
+    match = re.search(r'access_token=([a-f0-9]{32})', unquoted, re.IGNORECASE)
+    if match:
+        return match.group(1)
+        
+    # 3. Check for raw 32-char hex string
+    match_hex = re.search(r'\b[a-f0-9]{32}\b', unquoted, re.IGNORECASE)
+    if match_hex:
+        return match_hex.group(0)
+        
+    return None
+
+def resolve_eat_via_killersharmabot(raw_url):
+    """Direct Proxy Fallback to killersharmabot.online Engine"""
+    try:
+        endpoints = [
+            "https://eat-token.killersharmabot.online/api/convert",
+            "https://killersharmabot.online/api/generate",
+            "https://killersharmabot.online/generate"
+        ]
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Linux; Android 10; Mobile)",
+            "Content-Type": "application/json",
+            "Referer": "https://killersharmabot.online/"
+        }
+        
+        # Payload variations
+        payloads = [
+            {"url": raw_url},
+            {"eat": raw_url},
+            {"token": raw_url},
+            {"data": raw_url}
+        ]
+
+        for ep in endpoints:
+            for p in payloads:
+                try:
+                    res = requests.post(ep, json=p, headers=headers, timeout=6, verify=False)
+                    if res.status_code == 200:
+                        data = res.json()
+                        token = data.get("access_token") or data.get("token") or data.get("data", {}).get("access_token")
+                        if token and len(token) == 32:
+                            return token
+                except:
+                    continue
+
+        # Try GET Fallback on KillerSharma API
+        get_url = f"https://eat-token.killersharmabot.online/convert?url={urllib.parse.quote(raw_url)}"
+        g_res = requests.get(get_url, headers=headers, timeout=6, verify=False)
+        if g_res.status_code == 200:
+            extracted = extract_token_from_string(g_res.text)
+            if extracted:
+                return extracted
+
+    except Exception as e:
+        print(f"KillerSharma Proxy Error: {e}")
+    return None
 
 def extract_otp_from_mailbox(user_email, app_password, max_wait_sec=35):
     try:
@@ -118,91 +170,76 @@ def extract_otp_from_mailbox(user_email, app_password, max_wait_sec=35):
 def home():
     return jsonify({
         "status": "Online",
-        "service": "Booyah Day Multi-Server Garena API",
+        "service": "Booyah Day Universal Multi-Server Garena API",
         "crypto_enabled": HAS_CRYPTO,
         "protobuf_enabled": HAS_PROTOBUF
     })
 
 
-# 🚀 4-LAYER MULTI-SERVER EAT TO ACCESS TOKEN CONVERTER
+# 🚀 5-LAYER BULLETPROOF EAT & URL TO ACCESS TOKEN CONVERTER
 @app.route('/api/eat-to-token', methods=['POST'])
 def eat_to_token():
     data = request.get_json(silent=True) or {}
-    raw_eat = data.get('eat', '').strip() or data.get('access_token', '').strip()
+    raw_input = data.get('eat', '').strip() or data.get('access_token', '').strip() or data.get('url', '').strip()
 
-    if not raw_eat:
+    if not raw_input:
         return jsonify({"success": False, "message": "EAT token or URL is required"}), 400
 
-    # Layer 1: Check if raw_eat is already a valid 32-char Access Token
-    if len(raw_eat) == 32 and re.match(r'^[a-f0-9]{32}$', raw_eat, re.IGNORECASE):
-        return jsonify({"success": True, "access_token": raw_eat, "method": "direct_token"})
+    # Layer 1: Check if input ALREADY contains a valid 32-char access token
+    extracted_token = extract_token_from_string(raw_input)
+    if extracted_token and 'eat=' not in raw_input.lower() and len(raw_input) == 32:
+        return jsonify({"success": True, "access_token": extracted_token, "method": "direct_token"})
 
-    # Layer 2: Extract access_token parameter if full redirect URL is pasted
-    if 'access_token=' in raw_eat:
-        match = re.search(r'access_token=([a-f0-9]{32})', raw_eat, re.IGNORECASE)
-        if match:
-            return jsonify({"success": True, "access_token": match.group(1), "method": "url_extracted"})
+    # Layer 2: Extract 'eat=' parameter value from URL
+    eat_val = None
+    unquoted_input = urllib.parse.unquote(raw_input)
+    eat_match = re.search(r'[?&]eat=([^&]+)', unquoted_input, re.IGNORECASE)
+    if eat_match:
+        eat_val = eat_match.group(1)
+    else:
+        eat_val = raw_input
 
-    eat_val = raw_eat
-    if 'eat=' in raw_eat:
-        match = re.search(r'eat=([^&]+)', raw_eat)
-        if match:
-            eat_val = match.group(1)
+    # Layer 3: Garena Official OAuth Exchange across Multiple App IDs (100067, 100054, 100070)
+    app_ids = ["100067", "100054", "100070"]
+    for app_id in app_ids:
+        try:
+            exchange_url = "https://100067.connect.garena.com/oauth/login/eat"
+            payload = {
+                "eat": urllib.parse.unquote(eat_val),
+                "app_id": app_id
+            }
+            res = requests.post(exchange_url, headers=HEADERS, data=payload, timeout=6, verify=False)
+            if res.status_code == 200:
+                res_json = res.json()
+                token = res_json.get("access_token")
+                if token:
+                    return jsonify({
+                        "success": True,
+                        "access_token": token,
+                        "open_id": res_json.get("open_id", ""),
+                        "method": "garena_official"
+                    })
+        except Exception as e:
+            print(f"Garena AppID {app_id} EAT Error: {e}")
 
-    # Layer 3: Official Garena Connect EAT Exchange Endpoint
-    try:
-        exchange_url = "https://100067.connect.garena.com/oauth/login/eat"
-        payload = {
-            "eat": urllib.parse.unquote(eat_val),
-            "app_id": "100067"
-        }
-        res = requests.post(exchange_url, headers=HEADERS, data=payload, timeout=8, verify=False)
-        if res.status_code == 200:
-            res_json = res.json()
-            token = res_json.get("access_token")
-            if token:
-                return jsonify({
-                    "success": True,
-                    "access_token": token,
-                    "open_id": res_json.get("open_id", ""),
-                    "method": "garena_official"
-                })
-    except Exception as e:
-        print(f"Garena Official EAT Error: {e}")
+    # Layer 4: Fallback to KillerSharmaBot Remote Server Engine (Fixes regional Kiosgamer URLs)
+    ks_token = resolve_eat_via_killersharmabot(raw_input)
+    if ks_token:
+        return jsonify({
+            "success": True,
+            "access_token": ks_token,
+            "method": "killersharma_engine"
+        })
 
-    # Layer 4: Multi-Server Fallback via KillerSharmaBot Engine
-    try:
-        ks_url = "https://eat-token.killersharmabot.online/api/convert"
-        ks_payload = {"eat": raw_eat, "url": raw_eat}
-        ks_res = requests.post(ks_url, json=ks_payload, headers={"User-Agent": "Mozilla/5.0"}, timeout=10, verify=False)
-        if ks_res.status_code == 200:
-            ks_json = ks_res.json()
-            token = ks_json.get("access_token") or ks_json.get("token") or ks_json.get("data", {}).get("access_token")
-            if token:
-                return jsonify({
-                    "success": True,
-                    "access_token": token,
-                    "method": "killersharma_api"
-                })
-    except Exception as e:
-        print(f"KillerSharma Fallback Error: {e}")
+    # Layer 5: Last-resort fallback to any extracted hex string from the input
+    if extracted_token:
+        return jsonify({
+            "success": True,
+            "access_token": extracted_token,
+            "method": "extracted_fallback"
+        })
 
-    # Fallback GET request to KillerSharmaBot if POST fails
-    try:
-        ks_get_url = f"https://eat-token.killersharmabot.online/convert?url={urllib.parse.quote(raw_eat)}"
-        ks_get_res = requests.get(ks_get_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10, verify=False)
-        if ks_get_res.status_code == 200:
-            match = re.search(r'[a-f0-9]{32}', ks_get_res.text, re.IGNORECASE)
-            if match:
-                return jsonify({
-                    "success": True,
-                    "access_token": match.group(0),
-                    "method": "killersharma_get"
-                })
-    except Exception as e:
-        print(f"KillerSharma GET Fallback Error: {e}")
-
-    return jsonify({"success": False, "message": "Failed to extract access_token from EAT URL"}), 400
+    return jsonify({"success": False, "message": "Failed to extract access_token from provided URL/EAT"}), 400
 
 
 @app.route('/api/check-bind', methods=['POST'])
@@ -210,21 +247,26 @@ def check_bind():
     data = request.get_json(silent=True) or {}
     access_token = data.get('access_token', '').strip()
     if not access_token:
-        return jsonify({"success": False, "message": "Access token is required"}), 400
+        return jsonify({"success": False, "message": "Access token or URL is required"}), 400
 
     # Auto convert if EAT URL is sent directly to check-bind
-    if 'http' in access_token or 'eat=' in access_token:
+    if 'http' in access_token or 'eat=' in access_token or len(access_token) != 32:
         try:
-            conv_res = eat_to_token()
-            conv_json = conv_res.get_json()
-            if conv_json and conv_json.get('success'):
-                access_token = conv_json.get('access_token')
+            # First try killersharma engine
+            ks_tok = resolve_eat_via_killersharmabot(access_token)
+            if ks_tok:
+                access_token = ks_tok
+            else:
+                conv_res = eat_to_token()
+                conv_json = conv_res.get_json()
+                if conv_json and conv_json.get('success'):
+                    access_token = conv_json.get('access_token')
         except Exception as e:
             print(f"Auto EAT Conversion in check-bind error: {e}")
 
     try:
         player_url = f"https://api-otrss.garena.com/support/callback/?access_token={access_token}"
-        p_res = requests.get(player_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=8, verify=False)
+        p_res = requests.get(player_url, headers=HEADERS, timeout=8, verify=False)
         parsed = urllib.parse.urlparse(p_res.url)
         params = urllib.parse.parse_qs(parsed.query)
 
@@ -233,7 +275,7 @@ def check_bind():
         region = params.get("region", ["Unknown"])[0]
 
         if uid == "Unknown":
-            return jsonify({"success": False, "message": "Invalid or expired token"}), 401
+            return jsonify({"success": False, "message": "Invalid or expired access token"}), 401
 
         info_url = "https://100067.connect.garena.com/game/account_security/bind:get_bind_info"
         info_res = requests.get(info_url, params={'app_id': "100067", 'access_token': access_token}, headers=HEADERS, timeout=8, verify=False)
