@@ -13,19 +13,24 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
 import urllib3
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad, unpad
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# Protobuf ইম্পোর্ট চেক
+# Crypto Import
+try:
+    from Crypto.Cipher import AES
+    from Crypto.Util.Padding import pad, unpad
+    HAS_CRYPTO = True
+except ImportError:
+    HAS_CRYPTO = False
+
+# Protobuf Import
 try:
     import MajoRLogin_pb2 as mLpB
     import MajorLoginRes_pb2 as mLrPb
     HAS_PROTOBUF = True
 except ImportError:
     HAS_PROTOBUF = False
-    print("Warning: Protobuf files not found, MajorLogin endpoints will be disabled.")
 
 app = Flask(__name__)
 CORS(app)
@@ -46,9 +51,11 @@ PLATFORM_MAP = {
 }
 
 def enc(d): 
+    if not HAS_CRYPTO: return d
     return AES.new(AeSkEy, AES.MODE_CBC, AeSiV).encrypt(pad(d, 16))
 
 def dec(d): 
+    if not HAS_CRYPTO: return d
     return unpad(AES.new(AeSkEy, AES.MODE_CBC, AeSiV).decrypt(d), 16)
 
 def convert_seconds(s):
@@ -57,8 +64,7 @@ def convert_seconds(s):
     m, s = divmod(m, 60)
     return f"{d} Day {h} Hour {m} Min {s} Sec"
 
-def extract_otp_from_mailbox(user_email, app_password, max_wait_sec=35):
-    """ইনবক্স থেকে Garena OTP খোঁজার ফাংশন"""
+def extract_otp_from_mailbox(user_email, app_password, max_wait_sec=30):
     try:
         mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
         mail.login(user_email, app_password)
@@ -87,36 +93,38 @@ def extract_otp_from_mailbox(user_email, app_password, max_wait_sec=35):
                         otp_match = re.search(r'\b\d{6}\b', full_text)
                         if otp_match:
                             otp_code = otp_match.group(0)
-                            mail.close()
-                            mail.logout()
+                            try: mail.close(); mail.logout()
+                            except: pass
                             return otp_code
-            time.sleep(3)
+            time.sleep(2.5)
 
-        mail.close()
-        mail.logout()
+        try: mail.close(); mail.logout()
+        except: pass
     except Exception as e:
         print(f"IMAP Error: {e}")
     return None
 
 
-# ===================== API ENDPOINTS =====================
-
 @app.route('/')
 def home():
-    return jsonify({"status": "Online", "service": "Booyah Day Garena API", "protobuf": HAS_PROTOBUF})
+    return jsonify({
+        "status": "Online",
+        "service": "Booyah Day Garena API",
+        "crypto": HAS_CRYPTO,
+        "protobuf": HAS_PROTOBUF
+    })
 
 
-# 1. চেক বাইন্ড ও প্লেয়ার ইনফো
 @app.route('/api/check-bind', methods=['POST'])
 def check_bind():
-    data = request.get_json() or {}
+    data = request.get_json(silent=True) or {}
     access_token = data.get('access_token', '').strip()
     if not access_token:
         return jsonify({"success": False, "message": "Access token is required"}), 400
 
     try:
         player_url = f"https://api-otrss.garena.com/support/callback/?access_token={access_token}"
-        p_res = requests.get(player_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        p_res = requests.get(player_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
         parsed = urllib.parse.urlparse(p_res.url)
         params = urllib.parse.parse_qs(parsed.query)
 
@@ -128,7 +136,7 @@ def check_bind():
             return jsonify({"success": False, "message": "Invalid or expired token"}), 401
 
         info_url = "https://100067.connect.garena.com/game/account_security/bind:get_bind_info"
-        info_res = requests.get(info_url, params={'app_id': "100067", 'access_token': access_token}, headers=HEADERS, timeout=10)
+        info_res = requests.get(info_url, params={'app_id': "100067", 'access_token': access_token}, headers=HEADERS, timeout=8)
         info_data = info_res.json() if info_res.status_code == 200 else {}
 
         current_email = info_data.get("email", "")
@@ -149,10 +157,9 @@ def check_bind():
         return jsonify({"success": False, "message": str(e)}), 500
 
 
-# 2. অটো বাইন্ড (IMAP App Password)
 @app.route('/api/auto-bind-imap', methods=['POST'])
 def auto_bind_imap():
-    data = request.get_json() or {}
+    data = request.get_json(silent=True) or {}
     access_token = data.get('access_token', '').strip()
     email_addr = data.get('email', '').strip()
     app_password = data.get('app_password', '').strip().replace(" ", "")
@@ -162,7 +169,6 @@ def auto_bind_imap():
         return jsonify({"success": False, "message": "All fields are required"}), 400
 
     try:
-        # Step 1: Send OTP
         send_url = "https://100067.connect.garena.com/game/account_security/bind:send_otp"
         send_payload = {
             "email": email_addr,
@@ -171,16 +177,14 @@ def auto_bind_imap():
             "app_id": "100067",
             "access_token": access_token
         }
-        send_res = requests.post(send_url, headers=HEADERS, data=send_payload, timeout=10)
+        send_res = requests.post(send_url, headers=HEADERS, data=send_payload, timeout=8)
         if send_res.json().get("result") != 0:
-            return jsonify({"success": False, "message": "Failed to send OTP to email"}), 400
+            return jsonify({"success": False, "message": "Failed to send OTP"}), 400
 
-        # Step 2: Extract OTP via IMAP
-        otp = extract_otp_from_mailbox(email_addr, app_password, max_wait_sec=35)
+        otp = extract_otp_from_mailbox(email_addr, app_password, max_wait_sec=30)
         if not otp:
-            return jsonify({"success": False, "message": "OTP not found in inbox. Please check App Password."}), 400
+            return jsonify({"success": False, "message": "OTP not found in inbox. Verify App Password."}), 400
 
-        # Step 3: Verify OTP
         verify_url = "https://100067.connect.garena.com/game/account_security/bind:verify_otp"
         v_payload = {
             "app_id": "100067",
@@ -190,13 +194,12 @@ def auto_bind_imap():
             "otp": otp,
             "type": "1"
         }
-        v_res = requests.post(verify_url, headers=HEADERS, data=v_payload, timeout=10)
+        v_res = requests.post(verify_url, headers=HEADERS, data=v_payload, timeout=8)
         verifier_token = v_res.json().get("verifier_token", "")
 
         if not verifier_token:
             return jsonify({"success": False, "message": "OTP verification failed"}), 400
 
-        # Step 4: Create Bind Request
         bind_url = "https://100067.connect.garena.com/game/account_security/bind:create_bind_request"
         b_payload = {
             "email": email_addr,
@@ -205,7 +208,7 @@ def auto_bind_imap():
             "verifier_token": verifier_token,
             "secondary_password": sec_code
         }
-        b_res = requests.post(bind_url, headers=HEADERS, data=b_payload, timeout=10)
+        b_res = requests.post(bind_url, headers=HEADERS, data=b_payload, timeout=8)
         b_json = b_res.json()
 
         if b_json.get("result") == 0:
@@ -217,15 +220,14 @@ def auto_bind_imap():
         return jsonify({"success": False, "message": str(e)}), 500
 
 
-# 3. ম্যানুয়াল OTP সেন্ড
 @app.route('/api/send-otp', methods=['POST'])
 def send_otp():
-    data = request.get_json() or {}
+    data = request.get_json(silent=True) or {}
     access_token = data.get('access_token', '').strip()
     email_addr = data.get('email', '').strip()
 
     if not access_token or not email_addr:
-        return jsonify({"success": False, "message": "Token and email required"}), 400
+        return jsonify({"success": False, "message": "Token & Email required"}), 400
 
     try:
         url = "https://100067.connect.garena.com/game/account_security/bind:send_otp"
@@ -236,7 +238,7 @@ def send_otp():
             "app_id": "100067",
             "access_token": access_token
         }
-        res = requests.post(url, headers=HEADERS, data=payload, timeout=10)
+        res = requests.post(url, headers=HEADERS, data=payload, timeout=8)
         res_json = res.json()
         if res_json.get("result") == 0:
             return jsonify({"success": True, "message": "OTP sent successfully"})
@@ -246,10 +248,9 @@ def send_otp():
         return jsonify({"success": False, "message": str(e)}), 500
 
 
-# 4. ম্যানুয়াল OTP ভেরিফাই ও বাইন্ড
 @app.route('/api/complete-bind', methods=['POST'])
 def complete_bind():
-    data = request.get_json() or {}
+    data = request.get_json(silent=True) or {}
     access_token = data.get('access_token', '').strip()
     email_addr = data.get('email', '').strip()
     otp = data.get('otp', '').strip()
@@ -265,7 +266,7 @@ def complete_bind():
             "otp": otp,
             "type": "1"
         }
-        v_res = requests.post(verify_url, headers=HEADERS, data=v_payload, timeout=10)
+        v_res = requests.post(verify_url, headers=HEADERS, data=v_payload, timeout=8)
         verifier_token = v_res.json().get("verifier_token", "")
 
         if not verifier_token:
@@ -279,128 +280,13 @@ def complete_bind():
             "verifier_token": verifier_token,
             "secondary_password": security_code
         }
-        b_res = requests.post(bind_url, headers=HEADERS, data=b_payload, timeout=10)
+        b_res = requests.post(bind_url, headers=HEADERS, data=b_payload, timeout=8)
         b_json = b_res.json()
 
         if b_json.get("result") == 0:
             return jsonify({"success": True, "message": "Bind successful"})
         else:
             return jsonify({"success": False, "message": b_json.get("error", "Bind request failed")}), 400
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
-
-
-# 5. আনবাইন্ড রিকোয়েস্ট
-@app.route('/api/unbind', methods=['POST'])
-def unbind():
-    data = request.get_json() or {}
-    access_token = data.get('access_token', '').strip()
-    identity_token = data.get('identity_token', '').strip()
-
-    if not access_token or not identity_token:
-        return jsonify({"success": False, "message": "Access token & Identity token required"}), 400
-
-    try:
-        url = "https://100067.connect.garena.com/game/account_security/bind:create_unbind_request"
-        payload = {
-            "app_id": "100067",
-            "access_token": access_token,
-            "identity_token": identity_token
-        }
-        res = requests.post(url, headers=HEADERS, data=payload, timeout=10)
-        res_json = res.json()
-        if res_json.get("result") == 0:
-            return jsonify({"success": True, "message": "Unbind request created successfully"})
-        else:
-            return jsonify({"success": False, "message": res_json.get("error", "Unbind failed")}), 400
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
-
-
-# 6. বাইন্ড রিকোয়েস্ট ক্যানসেল
-@app.route('/api/cancel-bind', methods=['POST'])
-def cancel_bind():
-    data = request.get_json() or {}
-    access_token = data.get('access_token', '').strip()
-
-    if not access_token:
-        return jsonify({"success": False, "message": "Access token required"}), 400
-
-    try:
-        url = "https://100067.connect.garena.com/game/account_security/bind:cancel_request"
-        payload = {"app_id": "100067", "access_token": access_token}
-        res = requests.post(url, headers=HEADERS, data=payload, timeout=10)
-        res_json = res.json()
-        if res_json.get("result") == 0:
-            return jsonify({"success": True, "message": "Bind request cancelled successfully"})
-        else:
-            return jsonify({"success": False, "message": res_json.get("error", "Cancel failed")}), 400
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
-
-
-# 7. EAT Token থেকে Access Token কনভার্ট
-@app.route('/api/eat-to-token', methods=['POST'])
-def eat_to_token():
-    data = request.get_json() or {}
-    eat_input = data.get('eat', '').strip()
-
-    if not eat_input:
-        return jsonify({"success": False, "message": "EAT token or URL required"}), 400
-
-    eat_token = None
-    if "http" in eat_input or "?" in eat_input:
-        parsed_url = urllib.parse.urlparse(eat_input)
-        query_params = urllib.parse.parse_qs(parsed_url.query)
-        if 'eat' in query_params:
-            eat_token = query_params['eat'][0]
-    else:
-        eat_token = eat_input
-
-    if not eat_token:
-        return jsonify({"success": False, "message": "Invalid EAT format"}), 400
-
-    try:
-        api_url = f"https://api-otrss.garena.com/support/callback/?access_token={eat_token}"
-        response = requests.get(api_url, headers={"User-Agent": "Mozilla/5.0"}, allow_redirects=True, timeout=15)
-        parsed_final = urllib.parse.urlparse(response.url)
-        final_params = urllib.parse.parse_qs(parsed_final.query)
-
-        if 'access_token' in final_params:
-            return jsonify({
-                "success": True,
-                "access_token": final_params['access_token'][0],
-                "uid": final_params.get('account_id', ['Unknown'])[0],
-                "nickname": urllib.parse.unquote(final_params.get('nickname', ['Unknown'])[0]),
-                "region": final_params.get('region', ['Unknown'])[0]
-            })
-        else:
-            return jsonify({"success": False, "message": "Access token not found in response"}), 400
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
-
-
-# 8. চেক বাউন্ড প্ল্যাটফর্মস (Facebook, Google, VK etc.)
-@app.route('/api/platform-binds', methods=['POST'])
-def platform_binds():
-    data = request.get_json() or {}
-    access_token = data.get('access_token', '').strip()
-
-    if not access_token:
-        return jsonify({"success": False, "message": "Access token required"}), 400
-
-    try:
-        url = "https://100067.connect.garena.com/bind/app/platform/info/get"
-        response = requests.get(url, params={"access_token": access_token}, headers=HEADERS, timeout=10)
-        d = response.json()
-
-        bounded_accounts = d.get("bounded_accounts", [])
-        bound_list = [PLATFORM_MAP.get(p_id, f"Unknown ({p_id})") for p_id in bounded_accounts]
-
-        return jsonify({
-            "success": True,
-            "bounded_platforms": bound_list
-        })
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
