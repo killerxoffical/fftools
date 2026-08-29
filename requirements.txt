@@ -1,6 +1,6 @@
-flask
-flask-cors
-requests
-gunicorn
-pycryptodome
-protobuf
+flask==3.0.3
+flask-cors==4.0.1
+requests==2.32.3
+gunicorn==22.0.0
+pycryptodome==3.20.0
+protobuf==4.25.3
