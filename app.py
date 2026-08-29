@@ -39,9 +39,9 @@ app = Flask(__name__)
 CORS(app)
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36",
     "Content-Type": "application/x-www-form-urlencoded",
-    "Accept": "application/json, text/plain, */*"
+    "Accept": "application/json"
 }
 
 PLATFORM_MAP = {
@@ -58,72 +58,6 @@ def convert_seconds(s):
         return f"{d} Day {h} Hour {m} Min {s} Sec"
     except:
         return ""
-
-def extract_token_from_string(text):
-    """Deep extracts any 32-character hex token from any text or URL"""
-    if not text:
-        return None
-    
-    # 1. Unquote URL multiple times to handle double encoding
-    unquoted = urllib.parse.unquote(urllib.parse.unquote(text))
-    
-    # 2. Check for access_token= parameter
-    match = re.search(r'access_token=([a-f0-9]{32})', unquoted, re.IGNORECASE)
-    if match:
-        return match.group(1)
-        
-    # 3. Check for raw 32-char hex string
-    match_hex = re.search(r'\b[a-f0-9]{32}\b', unquoted, re.IGNORECASE)
-    if match_hex:
-        return match_hex.group(0)
-        
-    return None
-
-def resolve_eat_via_killersharmabot(raw_url):
-    """Direct Proxy Fallback to killersharmabot.online Engine"""
-    try:
-        endpoints = [
-            "https://eat-token.killersharmabot.online/api/convert",
-            "https://killersharmabot.online/api/generate",
-            "https://killersharmabot.online/generate"
-        ]
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Linux; Android 10; Mobile)",
-            "Content-Type": "application/json",
-            "Referer": "https://killersharmabot.online/"
-        }
-        
-        # Payload variations
-        payloads = [
-            {"url": raw_url},
-            {"eat": raw_url},
-            {"token": raw_url},
-            {"data": raw_url}
-        ]
-
-        for ep in endpoints:
-            for p in payloads:
-                try:
-                    res = requests.post(ep, json=p, headers=headers, timeout=6, verify=False)
-                    if res.status_code == 200:
-                        data = res.json()
-                        token = data.get("access_token") or data.get("token") or data.get("data", {}).get("access_token")
-                        if token and len(token) == 32:
-                            return token
-                except:
-                    continue
-
-        # Try GET Fallback on KillerSharma API
-        get_url = f"https://eat-token.killersharmabot.online/convert?url={urllib.parse.quote(raw_url)}"
-        g_res = requests.get(get_url, headers=headers, timeout=6, verify=False)
-        if g_res.status_code == 200:
-            extracted = extract_token_from_string(g_res.text)
-            if extracted:
-                return extracted
-
-    except Exception as e:
-        print(f"KillerSharma Proxy Error: {e}")
-    return None
 
 def extract_otp_from_mailbox(user_email, app_password, max_wait_sec=35):
     try:
@@ -170,13 +104,13 @@ def extract_otp_from_mailbox(user_email, app_password, max_wait_sec=35):
 def home():
     return jsonify({
         "status": "Online",
-        "service": "Booyah Day Universal Multi-Server Garena API",
+        "service": "Booyah Day Official Direct Garena API",
         "crypto_enabled": HAS_CRYPTO,
         "protobuf_enabled": HAS_PROTOBUF
     })
 
 
-# 🚀 5-LAYER BULLETPROOF EAT & URL TO ACCESS TOKEN CONVERTER
+# 🚀 DIRECT OFFICIAL GARENA EAT TO ACCESS TOKEN CONVERTER
 @app.route('/api/eat-to-token', methods=['POST'])
 def eat_to_token():
     data = request.get_json(silent=True) or {}
@@ -185,61 +119,55 @@ def eat_to_token():
     if not raw_input:
         return jsonify({"success": False, "message": "EAT token or URL is required"}), 400
 
-    # Layer 1: Check if input ALREADY contains a valid 32-char access token
-    extracted_token = extract_token_from_string(raw_input)
-    if extracted_token and 'eat=' not in raw_input.lower() and len(raw_input) == 32:
-        return jsonify({"success": True, "access_token": extracted_token, "method": "direct_token"})
-
-    # Layer 2: Extract 'eat=' parameter value from URL
-    eat_val = None
-    unquoted_input = urllib.parse.unquote(raw_input)
-    eat_match = re.search(r'[?&]eat=([^&]+)', unquoted_input, re.IGNORECASE)
-    if eat_match:
-        eat_val = eat_match.group(1)
+    # 1. Parse URL if full redirected URL is pasted
+    eat_token = None
+    if "http" in raw_input or "?" in raw_input:
+        parsed_url = urllib.parse.urlparse(raw_input)
+        query_params = urllib.parse.parse_qs(parsed_url.query)
+        if 'eat' in query_params:
+            eat_token = query_params['eat'][0]
+        elif 'access_token' in query_params:
+            return jsonify({
+                "success": True,
+                "access_token": query_params['access_token'][0],
+                "method": "direct_url_param"
+            })
     else:
-        eat_val = raw_input
+        eat_token = raw_input.strip()
 
-    # Layer 3: Garena Official OAuth Exchange across Multiple App IDs (100067, 100054, 100070)
-    app_ids = ["100067", "100054", "100070"]
-    for app_id in app_ids:
-        try:
-            exchange_url = "https://100067.connect.garena.com/oauth/login/eat"
-            payload = {
-                "eat": urllib.parse.unquote(eat_val),
-                "app_id": app_id
-            }
-            res = requests.post(exchange_url, headers=HEADERS, data=payload, timeout=6, verify=False)
-            if res.status_code == 200:
-                res_json = res.json()
-                token = res_json.get("access_token")
-                if token:
-                    return jsonify({
-                        "success": True,
-                        "access_token": token,
-                        "open_id": res_json.get("open_id", ""),
-                        "method": "garena_official"
-                    })
-        except Exception as e:
-            print(f"Garena AppID {app_id} EAT Error: {e}")
+    if not eat_token:
+        return jsonify({"success": False, "message": "Could not extract EAT token from input"}), 400
 
-    # Layer 4: Fallback to KillerSharmaBot Remote Server Engine (Fixes regional Kiosgamer URLs)
-    ks_token = resolve_eat_via_killersharmabot(raw_input)
-    if ks_token:
-        return jsonify({
-            "success": True,
-            "access_token": ks_token,
-            "method": "killersharma_engine"
-        })
+    # 2. Official Garena Callback Redirect Resolution
+    try:
+        api_url = f"https://api-otrss.garena.com/support/callback/?access_token={eat_token}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36"
+        }
+        
+        response = requests.get(api_url, headers=headers, allow_redirects=True, timeout=15, verify=False)
+        parsed_final = urllib.parse.urlparse(response.url)
+        final_params = urllib.parse.parse_qs(parsed_final.query)
 
-    # Layer 5: Last-resort fallback to any extracted hex string from the input
-    if extracted_token:
-        return jsonify({
-            "success": True,
-            "access_token": extracted_token,
-            "method": "extracted_fallback"
-        })
+        if 'access_token' in final_params:
+            access_token = final_params['access_token'][0]
+            account_id = final_params.get('account_id', ['Unknown'])[0]
+            nickname = urllib.parse.unquote(final_params.get('nickname', ['Unknown'])[0])
+            region = final_params.get('region', ['Unknown'])[0]
 
-    return jsonify({"success": False, "message": "Failed to extract access_token from provided URL/EAT"}), 400
+            return jsonify({
+                "success": True,
+                "access_token": access_token,
+                "uid": account_id,
+                "nickname": nickname,
+                "region": region,
+                "method": "garena_official_redirect"
+            })
+        else:
+            return jsonify({"success": False, "message": "Access token not found in response. Token might be expired or invalid."}), 401
+
+    except Exception as e:
+        return jsonify({"success": False, "message": f"Failed to generate access token: {str(e)}"}), 500
 
 
 @app.route('/api/check-bind', methods=['POST'])
@@ -249,24 +177,19 @@ def check_bind():
     if not access_token:
         return jsonify({"success": False, "message": "Access token or URL is required"}), 400
 
-    # Auto convert if EAT URL is sent directly to check-bind
+    # Auto convert if EAT URL is sent directly
     if 'http' in access_token or 'eat=' in access_token or len(access_token) != 32:
         try:
-            # First try killersharma engine
-            ks_tok = resolve_eat_via_killersharmabot(access_token)
-            if ks_tok:
-                access_token = ks_tok
-            else:
-                conv_res = eat_to_token()
-                conv_json = conv_res.get_json()
-                if conv_json and conv_json.get('success'):
-                    access_token = conv_json.get('access_token')
+            conv_res = eat_to_token()
+            conv_json = conv_res.get_json()
+            if conv_json and conv_json.get('success'):
+                access_token = conv_json.get('access_token')
         except Exception as e:
-            print(f"Auto EAT Conversion in check-bind error: {e}")
+            print(f"Auto EAT Conversion error: {e}")
 
     try:
         player_url = f"https://api-otrss.garena.com/support/callback/?access_token={access_token}"
-        p_res = requests.get(player_url, headers=HEADERS, timeout=8, verify=False)
+        p_res = requests.get(player_url, headers=HEADERS, timeout=15, allow_redirects=True, verify=False)
         parsed = urllib.parse.urlparse(p_res.url)
         params = urllib.parse.parse_qs(parsed.query)
 
@@ -278,7 +201,7 @@ def check_bind():
             return jsonify({"success": False, "message": "Invalid or expired access token"}), 401
 
         info_url = "https://100067.connect.garena.com/game/account_security/bind:get_bind_info"
-        info_res = requests.get(info_url, params={'app_id': "100067", 'access_token': access_token}, headers=HEADERS, timeout=8, verify=False)
+        info_res = requests.get(info_url, params={'app_id': "100067", 'access_token': access_token}, headers=HEADERS, timeout=15, verify=False)
         info_data = info_res.json() if info_res.status_code == 200 else {}
 
         current_email = info_data.get("email", "")
@@ -320,7 +243,7 @@ def auto_bind_imap():
             "app_id": "100067",
             "access_token": access_token
         }
-        send_res = requests.post(send_url, headers=HEADERS, data=send_payload, timeout=8, verify=False)
+        send_res = requests.post(send_url, headers=HEADERS, data=send_payload, timeout=15, verify=False)
         if send_res.json().get("result") != 0:
             return jsonify({"success": False, "message": "Failed to send OTP"}), 400
 
@@ -337,7 +260,7 @@ def auto_bind_imap():
             "otp": otp,
             "type": "1"
         }
-        v_res = requests.post(verify_url, headers=HEADERS, data=v_payload, timeout=8, verify=False)
+        v_res = requests.post(verify_url, headers=HEADERS, data=v_payload, timeout=15, verify=False)
         verifier_token = v_res.json().get("verifier_token", "")
 
         if not verifier_token:
@@ -351,7 +274,7 @@ def auto_bind_imap():
             "verifier_token": verifier_token,
             "secondary_password": sec_code
         }
-        b_res = requests.post(bind_url, headers=HEADERS, data=b_payload, timeout=8, verify=False)
+        b_res = requests.post(bind_url, headers=HEADERS, data=b_payload, timeout=15, verify=False)
         b_json = b_res.json()
 
         if b_json.get("result") == 0:
@@ -381,7 +304,7 @@ def send_otp():
             "app_id": "100067",
             "access_token": access_token
         }
-        res = requests.post(url, headers=HEADERS, data=payload, timeout=8, verify=False)
+        res = requests.post(url, headers=HEADERS, data=payload, timeout=15, verify=False)
         res_json = res.json()
         if res_json.get("result") == 0:
             return jsonify({"success": True, "message": "OTP sent successfully"})
@@ -409,7 +332,7 @@ def complete_bind():
             "otp": otp,
             "type": "1"
         }
-        v_res = requests.post(verify_url, headers=HEADERS, data=v_payload, timeout=8, verify=False)
+        v_res = requests.post(verify_url, headers=HEADERS, data=v_payload, timeout=15, verify=False)
         verifier_token = v_res.json().get("verifier_token", "")
 
         if not verifier_token:
@@ -423,7 +346,7 @@ def complete_bind():
             "verifier_token": verifier_token,
             "secondary_password": security_code
         }
-        b_res = requests.post(bind_url, headers=HEADERS, data=b_payload, timeout=8, verify=False)
+        b_res = requests.post(bind_url, headers=HEADERS, data=b_payload, timeout=15, verify=False)
         b_json = b_res.json()
 
         if b_json.get("result") == 0:
